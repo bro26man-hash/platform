@@ -1,136 +1,135 @@
 #!/usr/bin/env python3
 """
 batch_cost_calculator.py
-========================
-A craft brewery batch cost calculator inspired by tfrayner/beerfestdb's
-CBF_beer_price_calculator.py (which prices beer based on ABV or cask cost,
-whichever is greater).
+================================================================================
+Craft Brewery Batch Cost Calculator
 
-This CLI version computes the total cost of a single production batch from
-raw ingredient inputs, derives the cost per barrel, and applies a configurable
-margin to recommend a selling price per barrel.
+Inspired by: tfrayner/beerfestdb - CBF_beer_price_calculator.py
+(https://github.com/tfrayner/beerfestdb)
 
-Reference: https://github.com/tfrayner/beerfestdb/blob/main/tool_dashboard/CBF_beer_price_calculator.py
+The original tool uses cost-based pricing: it compares a cost-derived price
+against an ABV-derived price and prices at the greater of the two. This script
+adapts that philosophy for a single-batch costing model:
+
+  1. Compute total ingredient / packaging cost for a batch.
+  2. Divide by batch size (barrels) to get cost per barrel.
+  3. Apply a configurable margin to recommend a selling price per barrel.
+
+Usage:
+    python batch_cost_calculator.py
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-# A standard US beer barrel = 31 US gallons.
-BARREL_TO_GALLONS = 31.0
-# Ounces per gallon (for hopping rates expressed in oz/gal).
-OUNCE_PER_GALLON = 128.0
-
-
-@dataclass
-class IngredientCosts:
-    """Per-unit cost inputs for a single batch."""
-    grain_per_lb: float = 0.0        # $ / lb of grain
-    hops_per_oz: float = 0.0         # $ / oz of hops
-    yeast_per_unit: float = 0.0      # $ / unit of yeast
-    packaging_per_unit: float = 0.0  # $ / unit of packaging (bottles/kegs)
+DEFAULT_MARGIN_perc = 30.0
 
 
 @dataclass
 class BatchInputs:
-    """Full set of inputs describing one production batch."""
-    batch_size_barrels: float             # size of the batch in barrels
-    grain_lbs: float                      # total grain used in the batch (lbs)
-    hops_oz: float                        # total hops used in the batch (oz)
-    yeast_units: float = 1.0              # yeast units (packs/liquid yeast)
-    packaging_units: float = 0.0          # packaging units (bottles or kegs)
-    margin_percent: float = 30.0          # target margin as a percentage
-    costs: IngredientCosts = field(default_factory=IngredientCosts)
+    """All costing inputs for a single brew batch."""
+    grain_cost_per_lb: float       # $ / lb
+    hops_cost_per_oz: float        # $ / oz
+    yeast_cost_per_unit: float     # $ / unit
+    packaging_cost_per_unit: float # $ / unit (kegs, bottles, cans)
+    grain_lbs: float
+    hops_oz: float
+    yeast_units: int
+    packaging_units: int
+    batch_barrels: float
+    margin_pct: float = DEFAULT_MARGIN_perc
 
 
-class BatchCostCalculator:
-    """Compute batch cost, cost-per-barrel, and recommended sale price."""
+def compute_batch(inputs: BatchInputs) -> dict:
+    """Return a dict of computed costing metrics."""
+    grain_total = inputs.grain_cost_per_lb * inputs.grain_lbs
+    hops_total = inputs.hops_cost_per_oz * inputs.hops_oz
+    yeast_total = inputs.yeast_cost_per_unit * inputs.yeast_units
+    packaging_total = inputs.packaging_cost_per_unit * inputs.packaging_units
 
-    def __init__(self, inputs: BatchInputs):
-        self.inputs = inputs
+    ingredient_total = grain_total + hops_total + yeast_total
+    total_cost = ingredient_total + packaging_total
 
-    # -- Component costs ----------------------------------------------------
-    def grain_cost(self) -> float:
-        return self.inputs.grain_lbs * self.inputs.costs.grain_per_lb
+    cost_per_barrel = total_cost / inputs.batch_barrels
+    # Recommended selling price = cost * (1 + margin/100)
+    recommended_price = cost_per_barrel * (1 + inputs.margin_pct / 100.0)
+    margin_dollars = recommended_price - cost_per_barrel
 
-    def hops_cost(self) -> float:
-        return self.inputs.hops_oz * self.inputs.costs.hops_per_oz
-
-    def yeast_cost(self) -> float:
-        return self.inputs.yeast_units * self.inputs.costs.yeast_per_unit
-
-    def packaging_cost(self) -> float:
-        return self.inputs.packaging_units * self.inputs.costs.packaging_per_unit
-
-    def total_ingredient_cost(self) -> float:
-        return (self.grain_cost() + self.hops_cost()
-                + self.yeast_cost() + self.packaging_cost())
-
-    # -- Per-barrel maths ---------------------------------------------------
-    def total_cost(self) -> float:
-        """Total cost of the entire batch (USD)."""
-        return self.total_ingredient_cost()
-
-    def cost_per_barrel(self) -> float:
-        """Cost attributed to a single barrel."""
-        if self.inputs.batch_size_barrels <= 0:
-            raise ValueError("batch_size_barrels must be greater than zero")
-        return self.total_cost() / self.inputs.batch_size_barrels
-
-    def recommended_price_per_barrel(self) -> float:
-        """Sale price per barrel after applying the target margin."""
-        margin = self.inputs.margin_percent / 100.0
-        return self.cost_per_barrel() * (1.0 + margin)
-
-    # -- Report -------------------------------------------------------------
-    def report(self) -> str:
-        lines = []
-        lines.append("=" * 55)
-        lines.append("       CRAFT BREWERY BATCH COST CALCULATOR")
-        lines.append("=" * 55)
-        b = self.inputs
-        lines.append(f"Batch size          : {b.batch_size_barrels:.2f} bbl "
-                     f"({b.batch_size_barrels * BARREL_TO_GALLONS:.0f} gal)")
-        lines.append(f"Grain               : {b.grain_lbs:.1f} lbs @ "
-                     f"${b.costs.grain_per_lb:.3f}/lb")
-        lines.append(f"Hops                : {b.hops_oz:.1f} oz @ "
-                     f"${b.costs.hops_per_oz:.3f}/oz")
-        lines.append(f"Yeast               : {b.yeast_units:.1f} units @ "
-                     f"${b.costs.yeast_per_unit:.3f}/unit")
-        lines.append(f"Packaging           : {b.packaging_units:.0f} units @ "
-                     f"${b.costs.packaging_per_unit:.3f}/unit")
-        lines.append(f"Target margin       : {b.margin_percent:.1f}%")
-        lines.append("-" * 55)
-        lines.append(f"Grain cost          : ${self.grain_cost():,.2f}")
-        lines.append(f"Hops cost           : ${self.hops_cost():,.2f}")
-        lines.append(f"Yeast cost          : ${self.yeast_cost():,.2f}")
-        lines.append(f"Packaging cost      : ${self.packaging_cost():,.2f}")
-        lines.append("-" * 55)
-        lines.append(f"TOTAL BATCH COST    : ${self.total_cost():,.2f}")
-        lines.append(f"COST PER BARREL     : ${self.cost_per_barrel():,.2f}")
-        lines.append(f"REC. SELL PRICE/bbl : ${self.recommended_price_per_barrel():,.2f}")
-        lines.append("=" * 55)
-        return "\n".join(lines)
+    return {
+        "grain_total": grain_total,
+        "hops_total": hops_total,
+        "yeast_total": yeast_total,
+        "packaging_total": packaging_total,
+        "ingredient_total": ingredient_total,
+        "total_cost": total_cost,
+        "cost_per_barrel": cost_per_barrel,
+        "recommended_price": recommended_price,
+        "margin_dollars": margin_dollars,
+    }
 
 
-def run_sample():
-    """Run the calculator against a representative sample batch."""
+def fmt(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def main():
+    print("=" * 72)
+    print("        CRAFT BREWERY BATCH COST CALCULATOR")
+    print("=" * 72)
+    print("Inspired by: tfrayner/beerfestdb (CBF_beer_price_calculator.py)")
+    print()
+
+    # ---- Sample batch: 5-barrel all-grain pale ale ------------------------
     sample = BatchInputs(
-        batch_size_barrels=10.0,
-        grain_lbs=600.0,
-        hops_oz=16.0,
-        yeast_units=4.0,
-        packaging_units=228.0,   # 228 bottles for 10 bbl
-        margin_percent=30.0,
-        costs=IngredientCosts(
-            grain_per_lb=1.60,
-            hops_per_oz=8.50,
-            yeast_per_unit=1.25,
-            packaging_per_unit=0.30,
-        ),
+        grain_cost_per_lb=1.25,
+        hops_cost_per_oz=0.85,
+        yeast_cost_per_unit=4.50,
+        packaging_cost_per_unit=1.75,
+        grain_lbs=120.0,
+        hops_oz=25.0,
+        yeast_units=3,
+        packaging_units=3,
+        batch_barrels=5.0,
+        margin_pct=30.0,
     )
-    calc = BatchCostCalculator(sample)
-    print(calc.report())
+
+    results = compute_batch(sample)
+
+    print("BATCH INPUTS")
+    print("-" * 72)
+    print(f"  Grain      : {sample.grain_lbs:,.1f} lb @ {fmt(sample.grain_cost_per_lb)}/lb")
+    print(f"  Hops       : {sample.hops_oz:,.1f} oz @ {fmt(sample.hops_cost_per_oz)}/oz")
+    print(f"  Yeast      : {sample.yeast_units} units @ {fmt(sample.yeast_cost_per_unit)}/unit")
+    print(f"  Packaging  : {sample.packaging_units} units @ {fmt(sample.packaging_cost_per_unit)}/unit")
+    print(f"  Batch size : {sample.batch_barrels:.1f} barrels")
+    print(f"  Margin     : {sample.margin_pct:.1f}%")
+    print()
+
+    print("COST BREAKDOWN")
+    print("-" * 72)
+    print(f"  Grain cost      : {fmt(results['grain_total'])}")
+    print(f"  Hops cost       : {fmt(results['hops_total'])}")
+    print(f"  Yeast cost      : {fmt(results['yeast_total'])}")
+    print(f"  Packaging cost  : {fmt(results['packaging_total'])}")
+    print(f"  Ingredient total: {fmt(results['ingredient_total'])}")
+    print(f"  TOTAL BATCH COST: {fmt(results['total_cost'])}")
+    print()
+
+    print("PRICING OUTPUT")
+    print("-" * 72)
+    print(f"  Cost per barrel        : {fmt(results['cost_per_barrel'])}")
+    print(f"  Margin per barrel      : {fmt(results['margin_dollars'])}")
+    print(f"  Recommended sell price : {fmt(results['recommended_price'])} / bbl")
+    print()
+
+    # ---- Validation ------------------------------------------------------
+    assert results["total_cost"] == results["grain_total"] + results["hops_total"] \
+        + results["yeast_total"] + results["packaging_total"], "Total mismatch"
+    assert abs(results["cost_per_barrel"] - results["total_cost"] / 5.0) < 1e-9
+    assert abs(results["recommended_price"] - results["cost_per_barrel"] * 1.30) < 1e-9
+    print("=" * 72)
+    print("VALIDATION: All assertions passed. Script executed successfully.")
+    print("=" * 72)
 
 
 if __name__ == "__main__":
-    run_sample()
+    main()
